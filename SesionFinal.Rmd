@@ -1,0 +1,889 @@
+---
+title: "Análisis de datos y machine learning con R"
+author: 'DSINToxicacion del bit de ACarreo: Germán Gil Planes, Eduardo Giménez Domínguez
+  y Javier Melgarejo Teruel'
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    highlight: kate
+    number_sections: true
+    theme: spacelab
+    toc: true
+    toc_float: true
+  word_document:
+    toc: true
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(GGally)
+library(mice)
+library(VIM)
+library(reshape2)
+library(caret)
+library(pROC)
+library(parallel)
+library(doParallel)
+library(gridExtra)
+library(gbm)
+```
+
+# Introducción
+En este trabajo llevaremos a la práctica lo visto en las clases de teoría de la asignatura de Aprendizaje Computacional (AC). En concreto, el objetivo será crear un modelo de clasificación mediante aprendizaje supervisado tras un análisis previo exhaustivo del problema dado. Es por ello que nuestro trabajo está dividido en tres apartados diferenciados: preprocesado de datos, entrenamiento de modelos y comparación entre modelos. La base de datos sobre la que trabajaremos es la [Credit Approval](https://archive.ics.uci.edu/dataset/27/credit+approval) dataset de [UC Irvine Machine Learning Repository](https://archive.ics.uci.edu/). Según se puede leer en la página de descarga de la base de hechos, esta contiene información sobre solicitudes de tarjetas de crédito. Por tanto, nuestro modelo deberá ser capaz de clasificar quién obtiene la tarjeta de crédito y quién no la obtiene a partir de la información dada.
+
+De esta manera importamos los datos y procedemos a su análisis.
+
+```{r Carga de datos}
+
+credit <- read.table("crx.data", sep=",", na.strings="?")
+credit.trainIdx <- readRDS("credit.trainIdx.rds")
+
+```
+
+
+# Preprocesado de datos
+En esta primer sección elaboraremos un análisis exploratorio de datos y un preproceso básico de datos. Este es un paso fundamental puesto que ello supondrá una mejor o peor evaluación de nuestro modelo predictivo.
+Nuestro dataset contiene un total de 690 observaciones o lo que hemos considerado que son personas que han solicitado una tarjeta de crédito y 16 variables siendo la última variable la clase (+ o -) que hemos deducido que es aquella que decide si se le concede el crédito o no a dicha persona. De los 15 predictores hay 6 numéricos (V2,V3,V8,V11,V14 y V15) y 9 categóricas (V1,V4,V5,V6,V7,V9,V10,V12 y V13). Hay que tener en cuenta que el nombre y valores de todas las variables han sido cambiados a símbolos sin significado para proteger la confidencialidad de los datos:
+
+```{r Mostrar datos}
+str(credit)
+```
+Sin embargo, tras una breve investigación por diferentes páginas de Internet (sobre todo por Kaggle [<a href="#ref1">1</a>] <a id="ref2"></a>) hemos conseguido averiguar el significado de cada variable por lo que hemos procedido a cambiar su nombre para que así estas tengan un significado. Además, para las variables categóricas, hemos realizado su transformación a factores para que estas puedan ser representadas y analizadas de manera correcta:
+
+```{r Mostrar datos 2}
+colnames(credit) <- c("Sexo", "Edad", "Deuda", "EstadoCivil", "EsCliente", 
+                  "NivelDeEducacion", "Etnia", "AnosEmpleados", "ImpagoPrevio", 
+                  "Empleado", "PuntuacionDeCredito", "LicenciaParaConducir", "Ciudadano", 
+                  "CodigoPostal", "Ingresos", "Aprobado")
+credit$Sexo <- as.factor(credit$Sexo)
+credit$EstadoCivil <- as.factor(credit$EstadoCivil)
+credit$EsCliente <- as.factor(credit$EsCliente)
+credit$NivelDeEducacion <- as.factor(credit$NivelDeEducacion)
+credit$Etnia <- as.factor(credit$Etnia)
+credit$ImpagoPrevio <- as.factor(credit$ImpagoPrevio)
+credit$Empleado <- as.factor(credit$Empleado)
+credit$LicenciaParaConducir <- as.factor(credit$LicenciaParaConducir)
+credit$Ciudadano <- as.factor(credit$Ciudadano)
+credit$Aprobado <- as.factor(credit$Aprobado)
+str(credit)
+
+```
+
+Dividimos el set credit en `credit.Datos.Train` y `credit.Datos.Test`
+
+```{r Division del credit en Train y Test}
+
+credit.Datos.Train <- credit[credit.trainIdx, ]
+credit.Datos.Test <- credit[-credit.trainIdx, ]
+
+```
+
+## Análisis monovariable
+En primer lugar vamos a analizar las variables numéricas y para ello mostraremos el mínimo, el máximo, el primer cuartil, el tercer cuartil, la media y la mediana de cada una de ellas.
+
+```{r}
+# Tabla con las variables numéricas
+columnasNum <- credit[,c(2,3,8,11,14,15)]
+
+summary(columnasNum)
+```
+Para tener una mejor visualización enseñaremos también un histograma para cada variable con lineas que representan cada una de las medidas mencionadas.
+
+```{r Análisis monovariable}
+# Lista de variables a analizar
+variables <- c("Edad", "Deuda", "AnosEmpleados", "PuntuacionDeCredito", "CodigoPostal", "Ingresos")
+
+# Dividir la ventana gráfica: 2 filas, 3 columnas
+par(mfrow = c(2, 3))
+
+for (var in variables) {
+  # Extraer y limpiar los datos
+  data_clean <- na.omit(credit[[var]])
+  
+  # Calcular estadísticas
+  mean_val <- mean(data_clean)
+  median_val <- median(data_clean)
+  q1 <- quantile(data_clean, 0.25)
+  q3 <- quantile(data_clean, 0.75)
+  min_val <- min(data_clean)
+  max_val <- max(data_clean)
+  
+  hist(data_clean, 
+       breaks = "Sturges", 
+       col = "skyblue", 
+       main = paste("Histograma de", var), 
+       xlab = "Valores", 
+       ylab = "Frecuencia", 
+       border = "darkblue", 
+       freq = TRUE, 
+       #ylim = c(0, max_y)
+       )
+  
+  abline(v = mean_val, col = "black", lwd = 2, lty = 2)    # Línea para la media
+  abline(v = median_val, col = "purple", lwd = 2, lty = 2) # Línea para la mediana
+  abline(v = q1, col = "orange", lwd = 2, lty = 3)         # Línea para el primer cuartil
+  abline(v = q3, col = "orange", lwd = 2, lty = 3)         # Línea para el tercer cuartil
+  abline(v = min_val, col = "red", lwd = 2, lty = 4)       # Línea para el mínimo
+  abline(v = max_val, col = "red", lwd = 2, lty = 4)       # Línea para el máximo
+}
+# Restaurar configuración de gráficos
+par(mfrow = c(1, 1))
+```
+Algo a destacar a partir de estas gráficas y de los resultados numéricos es que todas las variables numéricas no siguen una distribución normal sino que se encuentran todas sesgadas a la derecha, es decir, la moda está más a la izquierda que la mediana y esta a su vez más a la izquierda que la media. A partir de este pequeño análisis hemos creido conveniente analizar con algo más de profundidad tanto los **Ingresos** (la variable más sesgada a la derecha) como la **Edad** (la variable menos sesgada a la derecha) puesto que parecen ser los más interesantes.
+
+Veamos en primer lugar la variable **Ingresos**. Para ello mostraremos una versión del histograma más enriquecida a la que añadimos una estimación de la función de densidad de probabilidad y una representación de los valores reales de la variable bajo el eje X.
+
+```{r}
+# Histograma enriquecido con la pdf 
+dens<-density(credit$Ingresos,na.rm=T) 
+hist(credit$Ingresos, xlab="", main="Ingresos", ylim=c(0,max(dens$y)*1.1), probability=T) 
+lines(dens) 
+rug(jitter(credit$Ingresos))
+```
+
+Con esta gráfica podemos visualizar que se trata de un conjunto muy irregular debido a la existencia de varios valores fuera de rango (o outliers) los cuales trataremos más adelante pues podría dificultar el proceso de aprendizaje con algunos algoritmos (los sensibles a outliers). Para tener una idea de la magnitud de dichos outliers (el más significativo tiene un valor de 100.000) veamos la cantidad de valores menores a 5000.
+
+```{r}
+# Cuenta valores mayores a 5000
+num_valores <- sum(credit$Ingresos < 5000)
+cat("Numero de personas con ingresos menores a 5000: ",num_valores, "\n")
+cat("% de personas con ingresos menores a 5000: ",(num_valores/nrow(credit))*100, "%\n")
+```
+Esto quiere decir que solamente el 5% de los solicitantes (que corresponde a 30 personas) tienen unos ingresos mayores o iguales a 5000. Veamos ahora cuántos de ellos obtienen la tarjeta de crédito:
+
+```{r}
+ricos <- sum(credit$Ingresos >= 5000)
+ricos_con_tarjeta <- sum(credit$Ingresos >= 5000 & credit$Aprobado == "+")
+cat("Numero de personas con ingresos mayores o iguales a 5000 que obtienen la tarjeta: ",ricos_con_tarjeta, "\n")
+cat("% de personas que obtienen la tarjeta con ingresos mayores o iguales a 5000: ",(ricos_con_tarjeta/ricos)*100, "%\n")
+```
+Tenemos por tanto un porcentaje muy elevado de gente que a partir de ciertos ingresos obtienen la tarjeta de crédito lo que nos llevaría a pensar que los ingresos influyen en gran medida en el atributo de nuestro problema de clasificación. Para ver si estamos en lo cierto utilizaremos una gráfica que muestra la distribución de probabilidad para cada clase (+ o -) dependiendo de la variable **Ingresos** 
+
+```{r}
+nueva_tabla3 <- subset(credit, 0 < Ingresos & Ingresos < 5000)
+spineplot(Aprobado ~ Ingresos, data=nueva_tabla3, col = c("#07798D", "#7BCB9F"), breaks = 40)
+```
+
+Como podemos ver, a priori, las personas con menos ingresos tienen una menor probabilidad de obtener la tarjeta de crédito y dicha probabilidad parece aumentar a medida que aumentan los ingresos. 
+
+Veamos ahora la variable **Edad**. Al igual que con la variable **Ingresos** veamos un histograma con la función de densidad de probabilidad para dicha variable:
+
+```{r}
+# Histograma enriquecido con la pdf 
+dens<-density(credit$Edad,na.rm=T) 
+hist(credit$Edad, xlab="", main="Edad", ylim=c(0,max(dens$y)*1.1), probability=T) 
+lines(dens) 
+rug(jitter(credit$Edad))
+```
+
+Como podemos observar, esta gráfica está mucho menos sesgada que la de la variable estudiada anteriormente si bien sigue habiendo valores que destacan significativamente del resto (los valores más a la derecha). Algo a destacar de esta variable que nos confundió un poco fue el hecho de que hubiese edades tan jovenes puesto que en España la edad máxima para solicitar una tarjeta de crédito es a los 18 años. Esto hizo que investigasemos un poco y descubrimos que el dataset era de una compañía de Japón [<a href="#ref3">2</a>] <a id="ref4"></a>), país donde no existe una ley que defina el límite entre niño y adulto por lo que es totalmente viable adquirir una tarjeta de crédito con 13 años.
+
+Veamos ahora si existe alguna relación entre variable y clase:
+
+```{r}
+spineplot(Aprobado ~ Edad, data=credit, col = c("#07798D", "#7BCB9F"), breaks = 25)
+```
+
+En un principio no parece haber una relación muy significativa entre **Edad** y la clase, a excepción de que los menores de 18 años tienen una probabilidad muy baja de obtener una tarjeta de crédito.
+
+Finalmente, para comparar la distribución de ambas variables con la distribución normal teórica utilizaremos una gráfica Q-Q:
+
+```{r}
+# Dividir la ventana gráfica: 1 filas, 2 columnas
+par(mfrow = c(1, 2))
+
+qqnorm(credit[[2]], main="Gráfica Q-Q para Edad") 
+qqline(credit[[2]], main="Gráfica Q-Q para Edad")
+
+qqnorm(credit[[15]], main="Gráfica Q-Q para Ingresos") 
+qqline(credit[[15]], main="Gráfica Q-Q para Ingresos")
+
+# Restaurar configuración de gráficos
+par(mfrow = c(1, 1))
+```
+
+Como vemos, en ambos los percentiles (puntos (x,y)) quedan a la izquierda de la línea trazada como referencia lo que indica que efectivamente la distribución de probabilidad está desplazada a la izquierda. Además, podemos ver que la gráfica de la edad se ajusta más a su línea representada que la gráfica de los ingresos lo que indica que la edad se parece más a una distribución normal que los ingresos (si bien ninguna llega a serlo).
+
+Para terminar, analizaremos los predictores categóricos o discretos mediante su distribución de valores:
+
+```{r}
+# Tabla con las variables categóricos
+columnasNum <- credit[,c(1,4,5,6,7,9,10,12,13)]
+
+summary(columnasNum)
+summary(columnasNum$NivelDeEducacion)
+summary(columnasNum$Etnia)
+```
+
+Si ignoramos los valores nulos tenemos una cantidad de valores por variable que va desde 2 como para la variable **Sexo** hasta 14 como para la variable **NivelDeEducacion**. Todos los valores de las variables han sido cambiados a símbolos sin significado si bien es posible deducir sin mucho esfuerzo que por ejemplo los valores a y b de la variable **Sexo** representan femenino y masculino o que los valores t y f representan verdadero y falso en las variables **ImpagoPrevio**, **Empleado** y **LicenciaParaConducir**. 
+
+Una variable que hemos considerado a destacar es la variable **Etnia** puesto que toma muchos valores con una cantidad muy despareja entre ellos. Esto se puede observar fácilmente con el siguiente diagrama de barras:
+
+```{r}
+ggplot(credit, aes(x = Etnia, fill = Etnia)) +
+  geom_bar() +
+  labs(title = "Distribución de Categorías", x = "Categorías", y = "Frecuencia") +
+  theme_minimal()
+```
+
+Vemos como el valor **v** corresponde a más de la mitad de las observaciones en contraste con los valores **dd**,**j**,**n**,**o** o **z** que juntos no alcanzan las 30 observaciones. Tras ver esto sería interesante saber si existen grupos étnicos que tienen algún tipo de privilegio o de impedimento a la hora de obtener una tarjeta de crédito puesto que como es bien sabido, la sociedad japonesa es considerada una sociedad racista hacia la gente extranjera. Veamos si esto ocurre:
+
+
+```{r}
+spineplot(Aprobado ~ Etnia, data=credit, col = c("#07798D", "#7BCB9F"), breaks = 25)
+```
+
+Podemos observar que el grupo étnico mayoritario **v** tiene una probabilidad sobre el 40% de obtener la tarjeta de crédito. El grupo étnico más favorecido es el del valor **h** con un 65% mientras que el grupo étnico **ff** tan solo tiene un 15% de tasa de aprobación convirtiéndose en el más desfavorecido. Los grupos étnicos extremadamente inusuales **n** y **o** tienen una tasa de aprobación y desaprobación perfectamente balanceada.
+
+## Análisis multivariable
+Hasta ahora hemos tratado cada uno de los predictores independientemente con respecto al resto. Si acaso, hemos relacionado a cada predictor con la clase o bien los hemos comparado visualmente. En esta sección vamos a relacionarlos entre ellos para ver correlaciones y demás detalles interesantes.
+
+Para ello vamos a representar en una gráfica de puntos en dos dimensiones las 4 variables **Edad**, **Deuda** **AnosEmpleados** y **PuntuacionDeCredito** por pares:
+
+```{r}
+credit_sin_na <- na.omit(credit)
+ggpairs(credit_sin_na, columns = c(2, 3, 8, 11), aes(color=Aprobado),) + 
+  ggtitle("Relación entre atts. en credit")
+```
+
+En la diagonal principal se muestran las distribuciones de las variables mediante histogramas de densidad con dos grupos diferenciados por la clase Aprobado (+ o -). Las celdas fuera de la diagonal muestran los gráficos de dispersión para cada combinación par dada por la variable horizontal y vertical y las correlaciones numéricas entre variables. La correlación más alta se observa entre **Edad** y **AnosEmpleados** (>0.4), algo que tiene sentido pues, a mayor edad, mayor suelen ser los años trabajados. Los pares **Deuda** y **AnosEmpleados** y **AnosEmpleados** y **PuntuacionDeCredito** tienen una correlación moderada (>0.3). El resto de combinaciones tienen correlaciones débiles. Algo a destacar es que los valores + de **Aprobado** tienden a mostrar correlaciones más fuertes que los valores - de **Aprobado** lo que podría indicar diferencias en el comportamiento de la clase y por tanto patrones distintos que pueden ser significativos para nuestro modelo.
+
+## Tratamiento de valores nulos
+Veamos en primer lugar si nuestra base de datos tiene valores nulos y si es así cuantos hay por columna:
+
+```{r}
+# Calcular la cantidad de NA por columna
+na_por_columna <- colSums(is.na(credit))
+na_por_columna
+```
+Veámoslo mediante una gráfica para tener una mejor visualización:
+
+```{r}
+# Convertir a data.frame para graficar
+na_dataframe <- data.frame(
+  Columnas = names(na_por_columna),
+  NA_Count = na_por_columna
+)
+
+# Crear el gráfico
+ggplot(na_dataframe, aes(x = reorder(Columnas, -NA_Count), y = NA_Count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +  # Girar el gráfico para facilitar la lectura
+  labs(title = "Valores NA por columna",
+       x = "Columnas",
+       y = "Cantidad de NA") +
+  theme_minimal()
+
+```
+
+Como vemos, existen un total de 7 variables que contienen el valor NA en el número de filas indicado por la gráfica cuya cantidad varía de los 6 (**EstadoCivil** y **EsCliente**) a los 13 (**CodigoPostal**). Es una cantidad no muy significativa teniendo en cuenta que hay un total de 690 muestras. Veamos también si estos valores nulos siguen algún tipo de patrón:
+
+```{r}
+credit2 <- credit
+colnames(credit2) <- c("Sexo", "Edad", "Deuda", "EstadoCivil", "EsCliente", 
+                  "NivEducacion", "Etnia", "AnosEmple", "ImpagoPrevio", 
+                  "Empleado", "PuntCredito", "LicenciaCond", "Ciudadano", 
+                  "CodigoPostal", "Ingresos", "Aprobado")
+
+# Crear gráfico de patrones de NA
+aggr(credit2, col = c("navyblue", "yellow"),
+     numbers = TRUE,           # Mostrar números de NA en el gráfico
+     sortVars = FALSE,          # Ordenar columnas por cantidad de NA
+     labels = names(credit2),     # Etiquetas de las columnas
+     cex.axis = 0.7,           # Tamaño del texto en el eje
+     gap = 3,                  # Espacio entre columnas
+     ylab = c("Patrones de valores faltantes", "Patrones NA"))
+```
+
+Esta gráfica es muy interesante puesto que podemos ver que solamente hay 7 patrones que coinciden con los valores NA. Nos lleva por ejemplo a deducir que siempre que la variable **EsCliente** o **EstadoCivil** tenga un valor nulo las variables **NivelDeEducacion**, **Etnia** y **CodigoPostal** tendrán también un valor nulo.
+
+Para el correcto funcionamiento del modelo, estos valores nulos deben ser tratados. Hemos estudiado dos estrategias distintas para el tratamiento de dichos valores:
+
+1. **Eliminación de filas con NAs**
+   - Descripción: Esta estrategia consiste en eliminar todas las filas que contienen valores nulos.
+   - Ventajas: Sencillo de implementar y asegura que no haya valores faltantes en los datos.
+   - Desventajas: Puede resultar en la pérdida de una cantidad significativa de datos, especialmente si los NAs están distribuidos de manera uniforme en todo el conjunto de datos.
+
+2. **Imputación con la mediana o con la moda**
+   - Descripción: Esta estrategia reemplaza los valores nulos con la mediana o moda de la columna correspondiente (dependiendo de si la variable es numérica o categórica).
+   - Ventajas: Mantiene el tamaño del conjunto de datos y es fácil de implementar.
+   - Desventajas: Puede introducir sesgos si los datos no están distribuidos de manera uniforme.
+
+Tras realizar una serie de pruebas para los 4 modelos elegidos, con distintas posteriores de centrado, escalado, etc., hemos llegado a la conclusión de que la mejor estrategia es eliminar las filas con valores nulos, ya que de hecho ofrece un mejor rendimiento en los modelos. Era previsible puesto que el número de valores faltantes era muy bajo y no se perdía una cantidad significativa de datos.
+
+```{r Eliminacion filas NAs}
+
+credit.Datos.Train <- na.omit(credit.Datos.Train)
+credit.Datos.Test <- na.omit(credit.Datos.Test)
+
+```
+
+## Tratamiento de valores fuera de rango (outliers)
+Antes hemos estudiado los histogramas de ciertas variables y hemos visto que muchos de ellos tenían un gran sesgo hacia la derecha. Esto ocurre por la aparición de outliers. Hemos considerado, en este caso, tres estrategias a contemplar:
+
+1. **Eliminación de outliers**
+   - Descripción: Esta estrategia consiste en eliminar las observaciones que contienen valores atípicos.
+   - Ventajas: Es una solución directa y fácil de implementar. Elimina valores que pueden distorsionar los resultados y afectar la precisión del modelo, mejorando la calidad de los datos.
+   - Desventajas: Puede llevar a una pérdida de datos valiosos, especialmente si los outliers son pocos pero significativos.
+
+2. **Imputar outliers**
+   - Descripción: Esta estrategia reemplaza los outliers por la mediana
+   - Ventajas: Evita la pérdida de datos, ya que no se eliminan filas, sino que se modifican los valores extremos.
+   - Desventajas: Puede introducir sesgos si los outliers tienen una razón de ser o si son parte de una distribución natural de los datos
+
+3. **Mantener outliers**
+   - Descripción: Esta estrategia mantiene los outliers sin aplicar ningún cambio.
+   - Ventajas: No se pierde ningún dato, lo que puede ser útil cuando los outliers son reales y representativos de la variabilidad del mundo real.
+   - Desventajas: Los outliers pueden distorsionar el modelo, especialmente si se está utilizando un modelo sensible a los valores extremos (como la regresión lineal). Sin embargo, estamos en un problema de clasificación.   
+
+La teoría está muy bien, pero lo importante es saber qué te da mejores resultados en la práctica. Y es que, a diferencia de los valores nulos, tras hacer numerosas pruebas con los modelos, nos hemos dado cuenta que los mejores resultados venían cuando manteniamos los outliers sin modificar. Esto puede aumentar el coste computacional respecto a considerar eliminarlos, pero este aumento no es significativo porque no hay tantos outliers que sesguen la distribución de los predictores. 
+
+## Análisis PCA
+El análisis de componentes principales (PCA) es un tipo de transformación que nos permite hacer una reducción de dimensionalidad de los datos de entrada el cual solamente es aplicable sobre variables numéricas (por lo que en nuestro caso se hará sobre 6 variables). Nos sirve para identificar aquellos predictores correlacionados con el objetivo de sustituirlos por nuevas variables de entrada (PC1, PC2...) además de para facilitar la visualización y evaluación de la separabilidad entre las clases **Positivo** y **Negativo**. Vamos entonces a realizar el análisis de las componentes principales (los dos predictores con mayor varianza) y a estudiar la forma de estas:
+
+
+```{r}
+pcaData <- credit.Datos.Train[c("Edad", "Deuda", "AnosEmpleados", "PuntuacionDeCredito", "CodigoPostal", "Ingresos")]
+pcaData
+pca_result <- prcomp(pcaData, scale = TRUE)
+pcas = as.data.frame(pca_result$x,stringsAsFactors=F)
+pcas = cbind(Class = credit.Datos.Train$Aprobado,pcas)
+
+ggplot(pcas, aes(PC1, PC2)) + 
+     modelr::geom_ref_line(h = 0) +
+     modelr::geom_ref_line(v = 0) +
+     geom_point(aes(color = Class), size = 2, position='jitter',alpha = 0.4) +
+     xlab("First Principal Component") + 
+     ylab("Second Principal Component") + 
+     ggtitle("First Two Principal Components of Credit Data")
+
+```
+
+Como vemos, las componentes principales no proporcionan una separabilidad completa, no obstante, a pesar de la no separabilidad, puede ser intersante estudiar los loadings:
+
+```{r Loadings}
+loadings <- pca_result$rotation
+loadings[,1]
+```
+
+Observamos que la primera componente principal da importancia más o menos por igual a todas las variables y que todas tienen una relación inversa a excepción de la variable **CodigoPostal**. Vamos a ver la PC2:
+
+```{r}
+loadings <- pca_result$rotation
+loadings[,2]
+```
+
+Esta componente vemos que da mucha más importancia a la variable **Ingresos** y además lo hace negativamente y muy poca importancia a la variable **AnosEmpleados**. El resto de variables tienen una importancia moderada, algunas afectando positivamente y otras negativamente.
+
+También es posible comprobar qué porcentaje de la variación es explicada por cada componente principal
+
+```{r}
+VE <- pca_result$sdev^2
+PVE <- VE / sum(VE)
+round(PVE,3)
+```
+
+Como vemos, nuestras dos primeras componentes que son las que hemos visualizado anteriormente explican aproximadamente el 50% de la variación. Si quisieramos dar explicación al 90% necesitaríamos un total de 5 variables. Esto es posible verlo en las siguientes gráficas:
+
+```{r Variacion PCA}
+PVEplot <- qplot(c(1:length(PVE)), PVE) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("PVE") +
+  ggtitle("Variación explicada por cada PC") +
+  ylim(0, 1)
+
+cumPVE <- qplot(c(1:length(PVE)), cumsum(PVE)) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab(NULL) + 
+  ggtitle("Cumulative Scree Plot") +
+  ylim(0,1)
+
+grid.arrange(PVEplot, cumPVE, ncol = 2)
+
+```
+
+## Eliminación de variables
+Viendo la cantidad de distribuciones sesgadas que tenemos, se puede intuir que ninguna variable va a tener una varianza baja generalmente. De hecho, vamos a ver que así sea.
+
+```{r}
+
+nearZeroVar(credit)
+
+```
+Habiendo visto también que las correlaciones son más bien débiles, al menos en las variables continuas, nos quedaría estudiar el grado de importancia que cada modelo le da a cada variable. Esto se puede ver muy fácilmente tras cada entrenamiento con la instrucción varImp(). Pero, para ello, debemos entonces esperarnos a la ejecución de los modelos. 
+
+Tiene sentido que debamos proceder de esta manera porque, en la búsqueda de los mejores modelos, también entra en juego facilitarles a estos mismos el mejor pre-proceso posible. Es por eso que, tras el entrenamiento del modelo, nos damos cuenta cómo ha afectado nuestro pre-proceso. En particular, nos daremos cuenta de qué variables se han priorizado más que otras.
+
+Podemos adelantar que nuestra decisión final ha sido no eliminar ninguna variable porque, si bien es cierto que todos modelos prescinden del uso de ciertas variables, otros sí hacen uso de esas mismas variables. No obstante, se probará a eliminar 5 predictores como preproceso complementario del Random Forest, eliminando aquellas 5 variables que no usa prácticamente en su entrenamiento.  
+
+## Adición de variables
+Hemos pensado seriamente en eliminar variables, pero añadir variables no. No encontramos un propósito claro para ello y puede aumentar innecesariamente la complejidad del modelo y la cantidad de cálculos requeridos, sin una mejora en el rendimiento. Esto puede hacer que el modelo sea más difícil de interpretar, más propenso al sobreajuste y más costoso computacionalmente. Es verdad que hemos reflexionado acerca de fusionar los predictores de **Edad** y **AnosEmpleados** en uno solo, pero no hay mejora aparente y el coste tampoco se reduce considerablemente.
+
+## Transformación de los datos
+Hemos realizado 3 comparaciones respecto a la transformación de los datos:
+
+1. **Sin transformación**
+   - No se realiza ninguna transformación en los datos.
+   - Ventajas: Sencillo de implementar y no introduce sesgos extras en los datos.
+   - Desventajas: Puede resultar en un rendimiento inferior en los modelos, especialmente si los datos no siguen una distribución normal.
+
+2. **Transformación con Box-Cox**
+    - La transformación Box-Cox es una técnica que busca transformar los datos para que sigan una distribución normal.
+    - Ventajas: Estabiliza la varianza y mejora la normalidad de los datos.
+    - Desventajas: Su principal inconveniente es que no puede ser aplicada a valores negativos ni a valores iguales a 0.
+
+3. **Transformación con Yeo-Johnson**
+    - La transformación Yeo-Johnson es una extensión de la transformación Box-Cox que permite trabajar con valores negativos y con valores iguales a 0.
+    - Ventajas: Permite trabajar con valores negativos y con valores iguales a 0.
+    - Desventajas: Más costosa computacionalmente que la transformación Box-Cox.
+
+Tras realizar una serie de pruebas para los 4 modelos elegidos, hemos llegado a la conclusión de que la mejor estrategia es la transformación con Yeo-Johnson, ya que de hecho ofrece un mejor rendimiento en los modelos. No transformar los datos fue la opción descartada inicialmente porque todas las distribuciones están sesgadas hacia la derecha, y finalmente elegimos Yeo-Johnson por su mayor flexibilidad, ya que el coste computacional no varía tanto de una opción a otra.
+
+Hemos decidido también no centrar los datos, puesto que en los 4 algoritmos que usamos, la distancia no nos supone un problema, ya que ninguno de ellos se basa en la distancia entre los datos para realizar la clasificación.
+
+```{r Transformando variables}
+
+# Definir las variables para aplicar la transformación
+vars_to_transform <- c("Edad", "Deuda", "AnosEmpleados", "PuntuacionDeCredito", "CodigoPostal", "Ingresos")
+
+# Iterar sobre cada variable
+for (var in vars_to_transform) {
+  # Seleccionar la columna actual
+  dx <- credit.Datos.Train[, var, drop = FALSE]
+  dxTest <- credit.Datos.Test[, var, drop = FALSE]
+
+  # Aplicar la transformación Yeo-Johnson
+  preProcValues <- preProcess(dx, method = "YeoJohnson")
+
+  # Transformar los datos
+  dx_transformed <- predict(preProcValues, dx)
+  dx_transformedTest <- predict(preProcValues, dxTest)
+
+  # Sustituir la columna original por la transformada
+  credit.Datos.Train[, var] <- dx_transformed[[var]]
+  credit.Datos.Test[, var] <- dx_transformedTest[[var]]
+}
+
+# Limpiar variables temporales
+rm(dx, dx_transformed, dx_transformedTest, dxTest, var, vars_to_transform, preProcValues)
+
+```
+
+# Entrenamiento de modelos
+Con todo lo anterior, nos disponemos ya a entrenar 4 modelos. Nuestros elegidos son: gbm (complejo), Random Forest (complejo), rpart (sencillo) y C5.0 (complejo). 
+
+Los dos primeros los escogimos porque, viendo la web del repositorio del dataset, parecían buenos candidatos a la hora de obtener precisión. El modelo `rpart`, por su parte, es nuestro modelo simple escogido de entre los que se listaban en el pdf de la práctica. Y, por último, la última elección fue la del c5.0 que, tras probar otros modelos como `adaboost` o algunos de 'bag', vimosque era eficiente a la par que preciso en comparación con estos dos y otros más que descartamos. Tomamos la decisión de que que no merecía la pena sostener el coste que suponía la ejecución del `adaboost`, por ejemplo, viendo que no mejoraba la precisión significativamente.
+
+También seleccionamos la variable "Aprobado" como variable de salida y el resto de variables como variables de entrada. Destacar también que R no permite trabajar con los signos "+" y "-" en las variables de salida (o al menos nos hemos encontrado errores), por lo que hemos decidido cambiarlos por "Positivo" y "Negativo" 
+respectivamente.
+
+```{r Preparacion datos modelos}
+credit.Var.Salida.Usada <- c("Aprobado")
+credit.Vars.Entrada.Usadas <- setdiff(names(credit.Datos.Train), credit.Var.Salida.Usada)
+credit.Datos.Train[[credit.Var.Salida.Usada]] <- factor(
+  credit.Datos.Train[[credit.Var.Salida.Usada]], 
+  levels = c("-", "+"),
+  labels = c("Negativo", "Positivo")
+)
+
+credit.Datos.Test[[credit.Var.Salida.Usada]] <- factor(
+  credit.Datos.Test[[credit.Var.Salida.Usada]], 
+  levels = c("-", "+"),
+  labels = c("Negativo", "Positivo")
+)
+
+```
+
+## Modelo 1: Rpart
+Para iniciar la elección de modelo, hemos elegido en primer lugar un algoritmo de árboles de decisión, concretamente el algoritmo rpart. Este algoritmo es muy sencillo de implementar y de entender, por lo que es una buena opción para comenzar. Además, es un algoritmo que no requiere de un preprocesado muy exhaustivo de los datos, por lo que es una buena opción para empezar a trabajar con el dataset.
+
+Caret ofrece únicamente un hiperparámetro, `cp`, que controla la complejidad del árbol. Existen otros hiperparámetros como `minsplit` o `minbucket` que no se pueden ajustar con Caret.
+
+Así, entrenamos el modelo con el método `rpart` y evaluamos su rendimiento con la métrica de Accuracy. Destacar que hemos usado un `tuneLength` de 10 después de probar varios valores para tuneLength y ver que ha dado buenos resultados, puesto que su precisión es casi idéntica al máximo (25) y el tiempo de ejecución es menor.
+
+
+```{r Training Rpart}
+set.seed(1234)
+
+credit.ctrl.rpart<- trainControl(
+  verboseIter = FALSE,
+)
+credit.rpart<-train(credit.Datos.Train[credit.Vars.Entrada.Usadas],
+                                 credit.Datos.Train[[credit.Var.Salida.Usada]], 
+                                 method='rpart',
+                                 metric = "Accuracy",
+                                 tuneLength = 10,
+                                 trControl = credit.ctrl.rpart
+                                 )
+credit.rpart
+#Importancia de las variables
+varImp(credit.rpart)
+```
+En este primer modelo simple, hemos obtenido accuracys del 86% en su mayoría, salvo 68% para cp~0.71 y 83% para cp=0. Para ser el primer modelo y tratarse del simple, nada mal el comienzo y parece que el preproceso aplicado hasta el momento puede dar buenos resultados más adelante.
+
+Vemos que, el modelo simple no se complica mucho durante su entrenamiento y desprecia todos los predicotres salvo ImpagoPrevio, PuntuacionDeCredito, Empleado, AnosEmpleados e Ingresos. Los modelos complejos harán más hincapié en el resto y tratarán de buscar patrones con mayor ímpetu.	
+
+## Modelo 2: Stochastic Gradient Boosting (gbm) con TuneGrid
+En segundo lugar, hemos elegido un algoritmo de Gradient Boosting, concretamente el algoritmo gbm. Este algoritmo es más complejo que el anterior, pero también es más potente y suele dar mejores resultados. Además, es un algoritmo que requiere de un preprocesado más exhaustivo de los datos, pero, gracias a las pruebas realizadas, hemos visto que escalando el algoritmo mediante el método Yeo-Johnson (esto se generaliza al resto de modelos) se obtienen mejores resultados.
+
+Como hiperparámetros, encontramos `n_trees` (número total de árboles que se van a generar), `interaction.depth` (profundidad máxima de cada árbol de decisión), `shrinkage` (tasa de aprendizaje que controla cuán rápido el modelo ajusta los errores de cada árbol) y `n_minobsinnode` (número mínimo de observaciones requeridas en un nodo terminal para crear una división). Para ajustar estos hiperparámetros, hemos utilizado el método `tuneGrid` de Caret, que nos permite ajustar varios hiperparámetros a la vez. Hemos probado 'infinidad' de valores para cada hiperparámetro y hemos elegido aquellos que mejor resultado nos han dado.
+
+Para ello, hemos ido ajustando cada vez más los valores de los distintos hiperparámetros, usando el "ajuste de grano más fino", y, en general, consideramos que sí que nos ha dado mejores resultados.
+
+Dentro del estudio de los parámetros 'ocultos' tenemos el hiperparámetro `bag.fraction`. El valor de `bag.fraction` debe ser un número entre 0 y 1. Representa la fracción de las observaciones del conjunto de entrenamiento que se seleccionan aleatoriamente en cada iteración para entrenar el modelo. Así por ejemplo, 0.5 significa que en cada iteración se utilizarán el 50% de las observaciones para ajustar el modelo y 1 (valor predeterminado) significa que se usarán todas las observaciones en cada iteración. Sin embargo, esto último puede recaer en un problema de sobreajuste y es justamente lo que nos ha pasado. Con un `bag.fraction` de 0.75 obtenemos ligeramente mejores resultados que con cualquier otro valor.
+
+```{r Training GBM}
+
+set.seed(1234)
+n_folds<-10
+n_reps <- 3
+seedsLength = n_folds*n_reps
+seeds<-vector(mode = "list", length = seedsLength)
+
+gbm.grid <- expand.grid(
+  n.trees=c(30,35,40),
+  shrinkage=c(0.12,0.13,0.14,0.15),
+  n.minobsinnode=c(4,5,6),
+  interaction.depth=c(6,7)
+)
+
+# Calcular número de combinaciones
+combHParam = nrow(gbm.grid)
+
+foldIndexes<-createMultiFolds(credit.Datos.Train[[credit.Var.Salida.Usada]],k=n_folds,times=n_reps)
+
+for(i in 1:seedsLength) seeds[[i]]<- sample.int(n=1000+combHParam, combHParam)
+seeds[[seedsLength+1]]<-sample.int(1000, 1)
+
+# Configuración de control para validación cruzada
+credit.gbm.ctrl<- trainControl(
+  method = "repeatedcv",
+  number = n_folds,
+  repeats = n_reps,
+  verboseIter = TRUE,
+  index = foldIndexes,
+  seeds = seeds,
+  returnResamp = "all"
+)
+
+cl <- makeCluster(detectCores()-1)
+registerDoParallel(cl)
+
+set.seed(1234)
+
+# Entrenar modelo Gradient Boosting Machine
+system.time(credit.gbm.Acc <- train(
+  credit.Datos.Train[credit.Vars.Entrada.Usadas],
+  credit.Datos.Train[[credit.Var.Salida.Usada]], 
+  method = 'gbm',
+  tuneGrid = gbm.grid,
+  verbose = FALSE,
+  #metric = "ROC",
+  trControl = credit.gbm.ctrl,
+  bag.fraction = 0.75
+))
+
+stopImplicitCluster()
+stopCluster(cl)
+registerDoSEQ()
+
+
+
+
+# Graficar los resultados del ajuste de hiperparámetros
+plot(credit.gbm.Acc, metric = "Accuracy", plotType = "scatter", ylim = c(0.85, 0.89))
+
+options(max.print = 1000)
+credit.gbm.Acc
+
+# Importancia variables
+varImp(credit.gbm.Acc)
+```
+Tras numerosas pruebas, nos sentimos satisfechos de haber ajustado notablemente los hiperparámetros y obtenido aquellos que mejores resultados En la gráfica, podemos ver visualmente el accuracy alcanzado para cada combinación del grid ejecutado.
+
+Resalta con claridad un pico para la combinación n.trees = 40, interaction.depth = 6, shrinkage = 0.15 y n.minobsinnode = 4.
+
+Además, mostramos los 5 mejores resultados por la consola y averiguamos que el accuracy obtenido por esta combinación mencionada es de aproximadamente 88,39%.
+
+En cuanto a la importancia que el modelo gbm ha dado a cada una de las variables, vemos que solo `EsCliente` ha sido obviada durante el entrenamiento. Podríamos pensar en eliminarlos, pero solo mejoraría el coste computacional (que no es mucho porque precisamente esas variables se usan poco) y puede reducir el accuracy obtenido, por lo que nos quedamos satisfechos con el balance accuracy/coste que tenemos. Más adelante, sí lo haremos con el Random Forest, puesto que el coste es notablemente superior que en este caso y es buena práctica tratar de reducirlo.
+
+## Modelo 3: C5.0
+En tercer lugar, hemos elegido un algoritmo específico de clasificación para dos clases, C5.0. Es un modelo que evita el sobreajuste usando un algoritmo de poda. Además, es un algoritmo que no requiere de un preprocesado muy exhaustivo de los datos, puesto que es bastante robusto a la hora de tratar con outliers.
+
+Como hiperparámetros, encontramos `trials` (cantidad de iteraciones), `model` (tipo de modelo: árbol de decisión simple o modelo boosted con múltiples árboles) y `winnow` (favorece las características más relevantes y elimina las irrelevantes). 
+
+Dado que model y winnow solamente aceptan `rules` y `tree', y `TRUE` y `FALSE`, respectivamente, hemos decidido usar `tuneLength`. En este caso, hemos analizado que los únicos valores posibles para `trials` son 1, 10, 20... 100, por lo que hemos decidido usar un `tuneLength` de 11, ya que, con un número mayor, haría exactamente lo mismo que para el valor 11.
+
+
+```{r Training C5.0}
+
+set.seed(1234)
+n_folds<-10
+n_reps <- 3
+seedsLength = n_folds*n_reps
+seeds<-vector(mode = "list", length = seedsLength)
+
+foldIndexes<-createMultiFolds(credit.Datos.Train[[credit.Var.Salida.Usada]],k=n_folds,times=n_reps)
+combHParam = 44
+
+for(i in 1:seedsLength) seeds[[i]]<- sample.int(n=1000+combHParam, combHParam)
+seeds[[seedsLength+1]]<-sample.int(1000, 1)
+
+
+# Configuración de control para validación cruzada
+credit.c50.ctrl <- trainControl(
+  method = "repeatedcv",
+  number = n_folds,
+  repeats = n_reps,
+  verboseIter = FALSE,
+  index = foldIndexes,
+  seeds = seeds,
+)
+
+cl <- makeCluster(detectCores()-1)
+registerDoParallel(cl)
+
+set.seed(1234)
+
+# Entrenar modelo C5.0
+credit.c50.accuracy <- train(
+  credit.Datos.Train[credit.Vars.Entrada.Usadas],
+  credit.Datos.Train[[credit.Var.Salida.Usada]], 
+  method = 'C5.0',
+  verbose = FALSE,
+  metric = "Accuracy",
+  tuneLength = 11,
+  trControl = credit.c50.ctrl
+)
+
+stopImplicitCluster()
+stopCluster(cl)
+registerDoSEQ()
+
+credit.c50.accuracy
+# Importancia variables
+varImp(credit.c50.accuracy)
+```
+
+Vemos también resultados muy buenos con C5.0, entre 86 y 88%, y no vemos que haya variables despreciables, a excepción de `EsCliente`, la cual vuelve a ser inutilizada por el modelo durante el entrenamiento. Al igual que con gbm, y viendo que solo se trata de una variable, eliminar ese predictor no va a suponer una mejora considerable en el coste computacional, siendo ya C5.0 bastante eficiente, por lo que lo haremos directamente en el Random Forest.
+
+## Modelo 4: Random Forest (rf)
+Por último, hemos elegido el algoritmo Random Forest. Este algoritmo es muy potente y suele dar resultados precisos, por lo que es una buena opción para probar. Además, es un algoritmo que no requiere de un preprocesado muy exhaustivo de los datos.
+
+En este caso, Caret ofrece únicamente un hiperparámetro, `mtry`, que controla el número de variables que se consideran en cada división del árbol. Existen otros hiperparámetros como `ntree` o `nodesize`. Como en el primer modelo,  hemos usado `tuneLength`. Aquí, un `tuneLength` de 14 ya te aporta el número máximo de combinaciones que permite Random Forest en Caret (de 2 a 15 mtry). Sin embargo, para evitar una sobrecarga de combinaciones de parámetros y, reducir el coste en la medida de lo posible, hemos visto que el `tuneLength` apropiado es de 10.
+
+Para el estudio del hiperparámetro `ntree`, hemos sido concienzudos para llegar a la conclusión de que, con `ntree`=50, se obtienen resultados similares en cuanto a accuracy respecto a `ntree`=500, que es el valor que se coge por defecto. Por tanto, elegir un `ntree` mayor es innecesario y costoso en términos de recursos computacionales, sin una mejora significativa en la precisión del modelo. Así que, elegimos `ntree`=50.
+
+```{r Random Forest}
+
+set.seed(1234)
+n_folds<-10
+n_reps <- 3
+seedsLength = n_folds*n_reps
+seeds<-vector(mode = "list", length = seedsLength)
+
+foldIndexes<-createMultiFolds(credit.Datos.Train[[credit.Var.Salida.Usada]],k=n_folds,times=n_reps)
+combHParam = 10
+
+for(i in 1:seedsLength) seeds[[i]]<- sample.int(n=1000+combHParam, combHParam)
+seeds[[seedsLength+1]]<-sample.int(1000, 1)
+
+
+# Configuración de control para validación cruzada
+credit.rf.ctrl<- trainControl(
+  method = "repeatedcv",
+  number = n_folds,
+  repeats = n_reps,
+  verboseIter = FALSE,
+  index = foldIndexes,
+  seeds = seeds,
+  #summaryFunction = twoClassSummary,
+  #classProbs = TRUE
+)
+
+cl <- makeCluster(detectCores()-1)
+registerDoParallel(cl)
+
+set.seed(1234)
+
+# Entrenar modelo Gradient Boosting Machine
+credit.rf.accuracy <- train(
+  credit.Datos.Train[credit.Vars.Entrada.Usadas],
+  credit.Datos.Train[[credit.Var.Salida.Usada]], 
+  method = 'rf',
+  verbose = FALSE,
+  #metric = "ROC",
+  tuneLength = 10,
+  trControl = credit.rf.ctrl,
+  ntree = 50
+)
+
+stopImplicitCluster()
+stopCluster(cl)
+registerDoSEQ()
+
+credit.rf.accuracy
+# Importancia variables
+varImp(credit.rf.accuracy)
+```
+El accuracy también es bastante decente en el caso de Random Forest (87-88%). Observamos que, en cuanto a Accuracy, el gbm, Random Forest y C5.0 son los que ofrecen un mejor resultado.
+
+Además, podemos centrarnos en la ejecución de varImp() y ver que Random Forest hace caso omiso de ciertas variables. Vamos a ver qué pasa, en este caso, si le aplicamos otro preproceso a este modelo en el cual eliminamos esas 5 variables de, a priori, poca importancia.
+
+```{r Preprocess 2}
+
+library(dplyr)
+credit.Datos.Train2 <- credit.Datos.Train %>% select(-c(EstadoCivil, EsCliente, LicenciaParaConducir, Sexo, Ciudadano))
+credit.Vars.Entrada.Usadas2 <- setdiff(names(credit.Datos.Train2), credit.Var.Salida.Usada)
+
+```
+
+Una vez eliminadas las variables, vamos a volver a ejecutar el modelo.
+
+```{r Random Forest 2}
+
+cl <- makeCluster(detectCores()-1)
+registerDoParallel(cl)
+
+set.seed(1234)
+
+# Entrenar modelo Gradient Boosting Machine
+credit.rf.accuracy2 <- train(
+  credit.Datos.Train2[credit.Vars.Entrada.Usadas2],
+  credit.Datos.Train2[[credit.Var.Salida.Usada]], 
+  method = 'rf',
+  verbose = FALSE,
+  #metric = "ROC",
+  tuneLength = 10,
+  trControl = credit.rf.ctrl,
+  ntree = 100
+)
+
+stopImplicitCluster()
+stopCluster(cl)
+registerDoSEQ()
+
+credit.rf.accuracy2
+```
+Como vemos, se obtienen también muy buenos resultados. Random Forest no prestaba mucha atención a esas variables eliminadas y ha sabido también encontrar patrones entre las variables restantes. Además, no tenemos un `ntree` especialmente alto. Si lo tuviésemos, podría ser que Random Forest se las apañara para conseguir un buen rendimiento. Como no lo tiene, nos hace pensar que el rendimiento se ha mantenido porque, efectivamente, las variables que hemos eliminado estaban prácticamente inutilizadas. 
+
+# Comparación entre modelos
+
+A continuación, comparamos los resultados de los distintos modelos con el uso de la función `resamples()`. Esta función nos permite comparar directamente los resultados de los distintos modelos y ver cuál es el que mejor se ajusta a nuestros datos.
+
+```{r Comparacion modelos}
+credit.trainCtrl.3cv10.resampAll <- trainControl(
+method = "repeatedcv"
+,number = 10 ,repeats = 3, # Crosvalidaci´on de 10 pliegues, 3 repeticiones
+verboseIter=F, # Que muestre informaci´on mientras entrena
+returnResamp = "all" # Guardamos todo para hacer diagramas
+)
+
+credit.comparacion.rpart<- suppressWarnings(train(credit.Datos.Train[credit.Vars.Entrada.Usadas],
+                                 credit.Datos.Train[[credit.Var.Salida.Usada]], 
+                                 method='rpart',
+                                 metric = "Accuracy",
+                                 tuneLength = 10,
+                                 trControl = credit.trainCtrl.3cv10.resampAll
+                                 ))
+
+
+credit.comparacion.gbm <- suppressWarnings(train(
+  credit.Datos.Train[credit.Vars.Entrada.Usadas],
+  credit.Datos.Train[[credit.Var.Salida.Usada]], 
+  method = 'gbm',
+  tuneGrid = gbm.grid,
+  verbose = FALSE,
+  #metric = "ROC",
+  trControl = credit.trainCtrl.3cv10.resampAll,
+  bag.fraction = 0.75
+))
+
+
+credit.comparacion.c50 <- suppressWarnings(train(
+  credit.Datos.Train[credit.Vars.Entrada.Usadas],
+  credit.Datos.Train[[credit.Var.Salida.Usada]], 
+  method = 'C5.0',
+  verbose = FALSE,
+  metric = "Accuracy",
+  tuneLength = 11,
+  trControl = credit.trainCtrl.3cv10.resampAll
+))
+
+credit.comparacion.rf <- suppressWarnings(train(
+  credit.Datos.Train[credit.Vars.Entrada.Usadas],
+  credit.Datos.Train[[credit.Var.Salida.Usada]], 
+  method = 'rf',
+  verbose = FALSE,
+  #metric = "ROC",
+  tuneLength = 10,
+  trControl = credit.trainCtrl.3cv10.resampAll,
+  ntree = 50
+))
+
+
+lista.modelos <- list(rpart = credit.comparacion.rpart, gbm = credit.comparacion.gbm, c50 = credit.comparacion.c50, rf = credit.comparacion.rf)
+credit.rsamp.comparacion <- resamples(lista.modelos)
+summary(credit.rsamp.comparacion)
+            
+dotplot(credit.rsamp.comparacion, metric = "Accuracy",
+    scales =list(x = list(relation = "free")))
+
+
+
+```
+
+Como podemos observar, el resultado con mayor accuracy a nivel global es el de `gbm`, teniendo además un intervalo de confianza más estrecho que el resto de modelos, lo que nos indica que es un modelo más estable. Los resultados de Random Forest a nivel global son muy parecidos a los de gbm (algo inferiores), pero con un intervalo de confianza más amplio, lo que nos indica que es un modelo menos estable. Pero, en general, hemos obtenido buenos resultados a nivel global y los intervalos son muy consistentes entre los distintos modelos. Se observa que el modelo `rpart` es el que peor resultado ha obtenido, lógico teniendo en cuenta que es el modelo más simple de los 4. Los resultados de C5.0 también son buenos, siendo más consistentes por ejemplo que los de Random Forest, pero con un accuracy ligeramente inferior al de Random Forest.
+
+Finalmente, hemos decidido quedarnos con el modelo `gbm`. Esta decisión se ha tomado basándonos en que lo tenemos más 'controlado' habiendo elegido meticulosamente los hiperparámetros en el grid y sabiendo que tiene un accuracy bastante estable. Además, gbm es menos propenso al sobreajuste que Random Forest debido a su enfoque secuencial en el que cada árbol corrige los errores del anterior, lo que permite un ajuste más controlado y una mejor generalización.
+
+Los hiperparámetros en GBM, como la tasa de aprendizaje, la profundidad de los árboles y el número de árboles, permiten una regularización más fina, lo que reduce las posibilidades de sobreajuste.
+
+Con todo esto, ejecutamos el modelo de gbm que hemos entrenado, esta vez, con credit.Data.Test: 
+
+```{r Testing Modelo Final}
+preds<-predict(credit.gbm.Acc,
+            newdata=credit.Datos.Test[credit.Vars.Entrada.Usadas])
+caret::confusionMatrix(preds, credit.Datos.Test[[credit.Var.Salida.Usada]], positive = "Positivo", mode = "prec_recall" )
+
+```
+Nos damos cuenta que los resultados del train suelen ser optimistas y que, en general, se obtienen peores resultados al ejecutar el conjunto de datos nuevo (test). Sin embargo, el accuracy alcanzado ha sido de 87,59%. 
+
+# Conclusiones
+
+Gracias a este trabajo hemos aprendido a realizar un análisis de datos completo, desde la limpieza de los mismos hasta la elección del modelo final. A pesar de que tiene un inicio algo complicado, debido a la no etiquetación de las variables, nos hemos familiarizado mucho con el proceso de Machine Learning y hemos aprendido a utilizar las herramientas necesarias para llevar a cabo un análisis de datos completo. 
+
+# Bibliografía
+<a id="ref1">1.</a> https://www.kaggle.com/code/dilipkumarb/credit-card-approval-classification-model o https://www.kaggle.com/code/michaelcai2021/predicting-credit-card-approvals-with-sklearn [<a href="#ref2">↑</a>] 
+<a id="ref3">2.</a> https://archive.ics.uci.edu/dataset/28/japanese+credit+screening [<a href="#ref4">↑</a>]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
